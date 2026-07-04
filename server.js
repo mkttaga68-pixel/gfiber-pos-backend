@@ -21,12 +21,27 @@ const {
 const MB_BANK_BIN = '970422'; // BIN NAPAS VietQR cua MB Bank
 
 // Danh muc san pham cua landing page, anh xa sang variation_id that trong Pancake POS.
-// Gia lay tu chinh POS de tranh khach sua gia tren trinh duyet.
+// Gia KHONG con hardcode - moi lan dat hang se hoi POS gia hien tai (xem getLivePrice ben duoi),
+// tranh khach sua gia tren trinh duyet nhung van tu dong cap nhat khi anh doi gia trong POS.
 const PACKAGES = {
-  '1': { variationId: VARIATION_ID_1, price: 390000, label: '1 Hộp Fiber Detox' },
-  '2': { variationId: VARIATION_ID_2, price: 700000, label: '2 Hộp Fiber Detox' },
-  '3': { variationId: VARIATION_ID_3, price: 900000, label: '3 Hộp Fiber Detox' }
+  '1': { variationId: VARIATION_ID_1, label: '1 Hộp Fiber Detox' },
+  '2': { variationId: VARIATION_ID_2, label: '2 Hộp Fiber Detox' },
+  '3': { variationId: VARIATION_ID_3, label: '3 Hộp Fiber Detox' }
 };
+
+// Hoi POS gia ban hien tai (retail_price) cua 1 variation_id. Tra ve null neu khong tim thay.
+async function getLivePrice(variationId) {
+  const url = `https://pos.pages.fm/api/v1/shops/${PANCAKE_SHOP_ID}/products?variation_ids[]=${encodeURIComponent(variationId)}&api_key=${encodeURIComponent(PANCAKE_API_KEY)}`;
+  const res = await fetch(url);
+  const data = await res.json().catch(() => null);
+  if (!res.ok || !data || !Array.isArray(data.data)) return null;
+
+  for (const product of data.data) {
+    const variation = (product.variations || []).find(v => v.id === variationId);
+    if (variation && typeof variation.retail_price === 'number') return variation.retail_price;
+  }
+  return null;
+}
 
 app.get('/health', (req, res) => res.json({ ok: true }));
 
@@ -47,6 +62,11 @@ app.post('/api/order', async (req, res) => {
     }
     if (!PANCAKE_SHOP_ID || !PANCAKE_API_KEY) {
       return res.status(500).json({ success: false, error: 'Chưa cấu hình PANCAKE_SHOP_ID / PANCAKE_API_KEY trong .env.' });
+    }
+
+    const livePrice = await getLivePrice(pkg.variationId);
+    if (livePrice === null) {
+      return res.status(502).json({ success: false, error: 'Không lấy được giá sản phẩm từ POS, vui lòng thử lại.' });
     }
 
     const orderCode = 'GF' + Date.now().toString().slice(-8);
@@ -82,7 +102,7 @@ app.post('/api/order', async (req, res) => {
 
     const addInfo = orderCode;
     const qrUrl = `https://img.vietqr.io/image/${MB_BANK_BIN}-${MB_BANK_ACCOUNT}-compact2.png` +
-      `?amount=${pkg.price}&addInfo=${encodeURIComponent(addInfo)}&accountName=${encodeURIComponent(MB_BANK_ACCOUNT_NAME || '')}`;
+      `?amount=${livePrice}&addInfo=${encodeURIComponent(addInfo)}&accountName=${encodeURIComponent(MB_BANK_ACCOUNT_NAME || '')}`;
 
     // Ghi song song vao Google Sheet - khong lam cham/chan phan hoi cho khach neu Sheet loi
     if (GOOGLE_SHEETS_WEBHOOK_URL) {
@@ -95,7 +115,7 @@ app.post('/api/order', async (req, res) => {
           phone,
           address,
           package: pkg.label,
-          amount: pkg.price,
+          amount: livePrice,
           pancakeOrderId
         })
       }).catch((err) => console.error('[Google Sheets] ghi that bai:', err.message));
@@ -105,7 +125,7 @@ app.post('/api/order', async (req, res) => {
       success: true,
       orderCode,
       pancakeOrderId,
-      amount: pkg.price,
+      amount: livePrice,
       qrUrl,
       bankName: 'MB Bank',
       bankAccount: MB_BANK_ACCOUNT,
